@@ -62,7 +62,17 @@
           const lCheek = landmarks[203];
           const rColor = getRegionColor(rCheek);
           const lColor = getRegionColor(lCheek);
+    　  if (isRecording) {
+          const landmarks = results.multiFaceLandmarks[0];
+  
+          // ★特定の点（例：鼻先 = 1番）の情報を詳しく見る
+          const noseTip = landmarks[1];
+          console.log(`Nose Tip - x: ${noseTip.x.toFixed(2)}, y: ${noseTip.y.toFixed(2)}, visibility: ${noseTip.visibility}`);
 
+          // すべての点の visibility の平均を確認したい場合
+          const avgVisibility = landmarks.reduce((acc, curr) => acc + (curr.visibility || 0), 0) / landmarks.length;
+          console.log(`Average Visibility: ${avgVisibility.toFixed(4)}`);
+         
           // データを保存（時間、106点程度の座標、頬の色）
           recordedData.push({
             time: Date.now(),
