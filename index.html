@@ -2,72 +2,128 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>MediaPipe Face Mesh Test</title>
+  <title>Face & rPPG Data Collector</title>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
   <style>
-    body { font-family: sans-serif; text-align: center; }
-    #container { position: relative; width: 640px; height: 480px; margin: 0 auto; }
+    body { font-family: sans-serif; text-align: center; background: #f0f2f5; }
+    #container { position: relative; width: 640px; height: 480px; margin: 10px auto; border: 5px solid #fff; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); overflow: hidden; }
     video, canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
-    #status { margin-top: 500px; color: green; font-weight: bold; }
+    .controls { margin: 20px; padding: 20px; background: white; display: inline-block; border-radius: 10px; }
+    button { padding: 10px 25px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; transition: 0.3s; }
+    #startBtn { background: #28a745; color: white; }
+    #startBtn:disabled { background: #ccc; }
+    #stopBtn { background: #dc3545; color: white; display: none; }
+    input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 200px; }
+    #status { margin-top: 10px; font-weight: bold; color: #555; }
   </style>
 </head>
 <body>
-  <h1>Face Landmark Test</h1>
+  <h1>顔データ収集システム</h1>
+
+  <div class="controls">
+    <input type="text" id="userName" placeholder="被験者名（半角英数）">
+    <button id="startBtn">計測開始</button>
+    <button id="stopBtn">計測終了 & 送信</button>
+    <div id="status">準備中...</div>
+  </div>
+
   <div id="container">
     <video id="input_video"></video>
     <canvas id="output_canvas" width="640px" height="480px"></canvas>
   </div>
-  <div id="status">カメラ起動中...</div>
 
   <script>
+    const GAS_URL = "https://script.google.com/u/2/home/projects/1ZDC-OK0Dj1Fez88M23aSLAsc_eLPLR0oDpRKuhWN7xM35crqWZgDmihv/edit";
+    
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d');
+    const canvasCtx = canvasElement.getContext('2d', {willReadFrequently: true});
     const statusElement = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const userNameInput = document.getElementById('userName');
+
+    let isRecording = false;
+    let recordedData = [];
 
     function onResults(results) {
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
       if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-        statusElement.innerText = "検出中: 正常";
-        for (const landmarks of results.multiFaceLandmarks) {
-          // 顔の網目を描画
-          drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION,
-                         {color: '#C0C0C070', lineWidth: 1});
-          // 目や口などの主要なパーツを描画
-          drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_EYE, {color: '#FF3030'});
-          drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYE, {color: '#30FF30'});
-          drawConnectors(canvasCtx, landmarks, FACEMESH_FACE_OVAL, {color: '#E0E0E0'});
+        const landmarks = results.multiFaceLandmarks[0];
+        statusElement.innerText = isRecording ? "● 計測中..." : "準備完了";
+
+        if (isRecording) {
+          // rPPG用：右頬(423)と左頬(203)付近の色を取得
+          const rCheek = landmarks[423];
+          const lCheek = landmarks[203];
+          const rColor = getRegionColor(rCheek);
+          const lColor = getRegionColor(lCheek);
+
+          // データを保存（時間、106点程度の座標、頬の色）
+          recordedData.push({
+            time: Date.now(),
+            landmarks: landmarks.slice(0, 106), // とりあえず106点分
+            rppg: { right: rColor, left: lColor }
+          });
         }
       } else {
-        statusElement.innerText = "顔が見つかりません";
+        statusElement.innerText = "顔を認識できません";
       }
       canvasCtx.restore();
     }
 
-    const faceMesh = new FaceMesh({locateFile: (file) => {
-      return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-    }});
+    function getRegionColor(point) {
+      // 座標からピクセル位置を計算
+      const x = Math.floor((1 - point.x) * canvasElement.width);
+      const y = Math.floor(point.y * canvasElement.height);
+      const pixel = canvasCtx.getImageData(x, y, 1, 1).data;
+      return { r: pixel[0], g: pixel[1], b: pixel[2] };
+    }
 
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true, // これをtrueにすると106点より多い詳細な点が取れます
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
+    const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5 });
     faceMesh.onResults(onResults);
 
     const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await faceMesh.send({image: videoElement});
-      },
-      width: 640,
-      height: 480
+      onFrame: async () => { await faceMesh.send({image: videoElement}); },
+      width: 640, height: 480
     });
     camera.start();
+
+    // ボタンの処理
+    startBtn.onclick = () => {
+      if(!userNameInput.value) { alert("名前を入力してください"); return; }
+      isRecording = true;
+      recordedData = [];
+      startBtn.style.display = "none";
+      stopBtn.style.display = "inline-block";
+    };
+
+    stopBtn.onclick = async () => {
+      isRecording = false;
+      statusElement.innerText = "データを送信中...（数秒かかります）";
+      stopBtn.disabled = true;
+
+      const payload = {
+        userName: userNameInput.value,
+        points: recordedData
+      };
+
+      try {
+        const response = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        statusElement.innerText = "送信完了！ご協力ありがとうございました。";
+      } catch (e) {
+        statusElement.innerText = "エラー発生。通信環境を確認してください。";
+        console.error(e);
+      }
+    };
   </script>
 </body>
 </html>
