@@ -12,9 +12,8 @@
     .controls { margin: 20px; padding: 20px; background: white; display: inline-block; border-radius: 10px; }
     button { padding: 10px 25px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; transition: 0.3s; }
     #startBtn { background: #28a745; color: white; }
-    #startBtn:disabled { background: #ccc; }
     #stopBtn { background: #dc3545; color: white; display: none; }
-    input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 200px; }
+    input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 120px; margin: 5px; }
     #status { margin-top: 10px; font-weight: bold; color: #555; }
   </style>
 </head>
@@ -22,7 +21,10 @@
   <h1>顔データ収集システム</h1>
 
   <div class="controls">
-    <input type="text" id="userName" placeholder="被験者名（半角英数）">
+    <input type="password" id="passCode" placeholder="合言葉">
+    <input type="text" id="userID" placeholder="被験者ID">
+    <input type="text" id="userName" placeholder="担当者名">
+    <br>
     <button id="startBtn">計測開始</button>
     <button id="stopBtn">計測終了 & 送信</button>
     <div id="status">準備中...</div>
@@ -34,8 +36,10 @@
   </div>
 
   <script>
+    // --- 設定 ---
     const GAS_URL = "https://script.google.com/macros/s/AKfycby0dWkUb06_85_P2TO-RuocPjgYSsW3KtJ7UXKzFnrcSs6fmHjOxVhWzHfWz2x8PaRD/exec";
-    
+    const SECRET_PASS = "team123"; // ここをチームの合言葉に変えてください
+
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d', {willReadFrequently: true});
@@ -43,9 +47,17 @@
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const userNameInput = document.getElementById('userName');
+    const userIDInput = document.getElementById('userID');
+    const passInput = document.getElementById('passCode');
 
     let isRecording = false;
     let recordedData = [];
+
+    const ROI_LANDMARKS = {
+      forehead: [10, 151, 9],
+      rightCheek: [117, 118, 101],
+      leftCheek: [347, 348, 330]
+    };
 
     function onResults(results) {
       canvasCtx.save();
@@ -56,28 +68,17 @@
         const landmarks = results.multiFaceLandmarks[0];
         statusElement.innerText = isRecording ? "● 計測中..." : "準備完了";
 
-        if (isRecording) {
-          // rPPG用：右頬(423)と左頬(203)付近の色を取得
-          const rCheek = landmarks[423];
-          const lCheek = landmarks[203];
-          const rColor = getRegionColor(rCheek);
-          const lColor = getRegionColor(lCheek);
-    　  if (isRecording) {
-          const landmarks = results.multiFaceLandmarks[0];
-  
-          // ★特定の点（例：鼻先 = 1番）の情報を詳しく見る
-          const noseTip = landmarks[1];
-          console.log(`Nose Tip - x: ${noseTip.x.toFixed(2)}, y: ${noseTip.y.toFixed(2)}, visibility: ${noseTip.visibility}`);
+        const foreheadColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.forehead);
+        const rCheekColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.rightCheek);
+        const lCheekColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.leftCheek);
 
-          // すべての点の visibility の平均を確認したい場合
-          const avgVisibility = landmarks.reduce((acc, curr) => acc + (curr.visibility || 0), 0) / landmarks.length;
-          console.log(`Average Visibility: ${avgVisibility.toFixed(4)}`);
-         
-          // データを保存（時間、106点程度の座標、頬の色）
+        drawGuide(landmarks);
+
+        if (isRecording) {
           recordedData.push({
             time: Date.now(),
-            landmarks: landmarks.slice(0, 106), // とりあえず106点分
-            rppg: { right: rColor, left: lColor }
+            landmarks: landmarks.slice(0, 106), 
+            rppg: { forehead: foreheadColor, right: rCheekColor, left: lCheekColor }
           });
         }
       } else {
@@ -86,14 +87,34 @@
       canvasCtx.restore();
     }
 
-    function getRegionColor(point) {
-      // 座標からピクセル位置を計算
-      const x = Math.floor((1 - point.x) * canvasElement.width);
-      const y = Math.floor(point.y * canvasElement.height);
-      const pixel = canvasCtx.getImageData(x, y, 1, 1).data;
-      return { r: pixel[0], g: pixel[1], b: pixel[2] };
+    function getAverageColorOfPoints(landmarks, indices) {
+      let r = 0, g = 0, b = 0;
+      const sampleSize = 5;
+      indices.forEach(idx => {
+        const point = landmarks[idx];
+        const x = Math.floor((1 - point.x) * canvasElement.width);
+        const y = Math.floor(point.y * canvasElement.height);
+        const imageData = canvasCtx.getImageData(x - 2, y - 2, sampleSize, sampleSize).data;
+        let pr = 0, pg = 0, pb = 0;
+        for (let i = 0; i < imageData.length; i += 4) {
+          pr += imageData[i]; pg += imageData[i + 1]; pb += imageData[i + 2];
+        }
+        r += pr / (imageData.length / 4);
+        g += pg / (imageData.length / 4);
+        b += pb / (imageData.length / 4);
+      });
+      return { r: Math.round(r / indices.length), g: Math.round(g / indices.length), b: Math.round(b / indices.length) };
     }
 
+    function drawGuide(landmarks) {
+      canvasCtx.fillStyle = "rgba(0, 255, 0, 0.5)";
+      [...ROI_LANDMARKS.forehead, ...ROI_LANDMARKS.rightCheek, ...ROI_LANDMARKS.leftCheek].forEach(idx => {
+        const p = landmarks[idx];
+        canvasCtx.fillRect((1 - p.x) * canvasElement.width - 3, p.y * canvasElement.height - 3, 6, 6);
+      });
+    }
+
+    // --- MediaPipeの初期化 (ここが重要！) ---
     const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
     faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5 });
     faceMesh.onResults(onResults);
@@ -104,9 +125,10 @@
     });
     camera.start();
 
-    // ボタンの処理
+    // --- ボタンイベント ---
     startBtn.onclick = () => {
-      if(!userNameInput.value) { alert("名前を入力してください"); return; }
+      if(passInput.value !== SECRET_PASS) { alert("合言葉が違います"); return; }
+      if(!userIDInput.value || !userNameInput.value) { alert("IDと名前を入力してください"); return; }
       isRecording = true;
       recordedData = [];
       startBtn.style.display = "none";
@@ -119,19 +141,21 @@
       stopBtn.disabled = true;
 
       const payload = {
+        userID: userIDInput.value,
         userName: userNameInput.value,
         points: recordedData
       };
 
       try {
-        const response = await fetch(GAS_URL, {
+        await fetch(GAS_URL, {
           method: "POST",
+          mode: "no-cors", // GASへの簡易送信
           body: JSON.stringify(payload)
         });
-        statusElement.innerText = "送信完了！ご協力ありがとうございました。";
+        statusElement.innerText = "送信完了！ブラウザを閉じてOKです。";
       } catch (e) {
         statusElement.innerText = "エラー発生。通信環境を確認してください。";
-        console.error(e);
+        stopBtn.disabled = false;
       }
     };
   </script>
