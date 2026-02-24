@@ -23,7 +23,6 @@
   <div class="controls">
     <input type="password" id="passCode" placeholder="合言葉">
     <input type="text" id="userID" placeholder="被験者ID">
-    <input type="text" id="userName" placeholder="担当者名">
     <br>
     <button id="startBtn">計測開始</button>
     <button id="stopBtn">計測終了 & 送信</button>
@@ -38,7 +37,7 @@
   <script>
     // --- 設定 ---
     const GAS_URL = "https://script.google.com/macros/s/AKfycby0dWkUb06_85_P2TO-RuocPjgYSsW3KtJ7UXKzFnrcSs6fmHjOxVhWzHfWz2x8PaRD/exec";
-    const SECRET_PASS = "team123"; // ここをチームの合言葉に変えてください
+    const SECRET_PASS = "team123"; 
 
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
@@ -46,7 +45,6 @@
     const statusElement = document.getElementById('status');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
-    const userNameInput = document.getElementById('userName');
     const userIDInput = document.getElementById('userID');
     const passInput = document.getElementById('passCode');
 
@@ -77,7 +75,8 @@
         if (isRecording) {
           recordedData.push({
             time: Date.now(),
-            landmarks: landmarks.slice(0, 106), 
+            // 座標のみ保存（visibilityは除外）
+            landmarks: landmarks.slice(0, 106).map(l => ({x: l.x, y: l.y, z: l.z})), 
             rppg: { forehead: foreheadColor, right: rCheekColor, left: lCheekColor }
           });
         }
@@ -114,7 +113,6 @@
       });
     }
 
-    // --- MediaPipeの初期化 (ここが重要！) ---
     const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
     faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5 });
     faceMesh.onResults(onResults);
@@ -125,10 +123,9 @@
     });
     camera.start();
 
-    // --- ボタンイベント ---
     startBtn.onclick = () => {
       if(passInput.value !== SECRET_PASS) { alert("合言葉が違います"); return; }
-      if(!userIDInput.value || !userNameInput.value) { alert("IDと名前を入力してください"); return; }
+      if(!userIDInput.value) { alert("被験者IDを入力してください"); return; }
       isRecording = true;
       recordedData = [];
       startBtn.style.display = "none";
@@ -137,25 +134,44 @@
 
     stopBtn.onclick = async () => {
       isRecording = false;
-      statusElement.innerText = "データを送信中...（数秒かかります）";
+      
+      // 1. ボタンを無効化し、状態を表示
+      statusElement.innerText = "⏳ データをまとめています...";
       stopBtn.disabled = true;
+      stopBtn.style.opacity = "0.5";
 
       const payload = {
         userID: userIDInput.value,
-        userName: userNameInput.value,
         points: recordedData
       };
 
+      statusElement.innerText = "🚀 送信中... ブラウザを閉じないでください";
+
       try {
+        // GASへの送信（mode: 'no-cors' の場合、レスポンスの中身は見られませんが、
+        // ネットワークエラーがなければ catch に飛ばないことで成功を判定します）
         await fetch(GAS_URL, {
           method: "POST",
-          mode: "no-cors", // GASへの簡易送信
+          mode: "no-cors",
           body: JSON.stringify(payload)
         });
-        statusElement.innerText = "送信完了！ブラウザを閉じてOKです。";
+
+        // 2. 成功時の表示
+        statusElement.innerText = "✅ 送信成功！";
+        statusElement.style.color = "#28a745";
+        alert("データの送信が正常に完了しました！ご協力ありがとうございます。");
+        
+        // 次の計測のためにリセット
+        location.reload(); 
+
       } catch (e) {
-        statusElement.innerText = "エラー発生。通信環境を確認してください。";
+        // 3. 失敗時の表示
+        console.error(e);
+        statusElement.innerText = "❌ 送信失敗。ネット接続を確認してください。";
+        statusElement.style.color = "#dc3545";
+        alert("エラーが発生しました。もう一度「送信」を押すか、担当者に連絡してください。");
         stopBtn.disabled = false;
+        stopBtn.style.opacity = "1";
       }
     };
   </script>
