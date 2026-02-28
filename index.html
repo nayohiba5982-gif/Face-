@@ -15,13 +15,15 @@
     #stopBtn { background: #dc3545; color: white; display: none; }
     input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 120px; margin: 5px; }
     #status { margin-top: 10px; font-weight: bold; color: #555; }
+    /* 経過時間表示用のスタイル */
+    #timer { font-size: 24px; color: #dc3545; margin-bottom: 10px; font-weight: bold; display: none; }
   </style>
 </head>
 <body>
-  <h1>顔データ収集システム</h1>
+  <h1>Data Collector</h1>
 
   <div class="controls">
-    <input type="password" id="passCode" placeholder="Password">
+    <div id="timer">00.0s</div> <input type="password" id="passCode" placeholder="Password">
     <input type="text" id="userID" placeholder="User_ID">
     <br>
     <button id="startBtn">計測開始</button>
@@ -35,7 +37,6 @@
   </div>
 
   <script>
-    // --- 設定 ---
     const GAS_URL = "https://script.google.com/macros/s/AKfycby0dWkUb06_85_P2TO-RuocPjgYSsW3KtJ7UXKzFnrcSs6fmHjOxVhWzHfWz2x8PaRD/exec";
     const SECRET_PASS = "team123"; 
 
@@ -43,6 +44,7 @@
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d', {willReadFrequently: true});
     const statusElement = document.getElementById('status');
+    const timerElement = document.getElementById('timer'); // タイマー要素
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const userIDInput = document.getElementById('userID');
@@ -50,6 +52,7 @@
 
     let isRecording = false;
     let recordedData = [];
+    let startTime = 0; // 開始時間保持用
 
     const ROI_LANDMARKS = {
       forehead: [10, 151, 9],
@@ -64,7 +67,15 @@
 
       if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
         const landmarks = results.multiFaceLandmarks[0];
-        statusElement.innerText = isRecording ? "● 計測中..." : "準備完了";
+        
+        // 経過時間の計算と表示
+        if (isRecording) {
+          const elapsed = (Date.now() - startTime) / 1000;
+          timerElement.innerText = elapsed.toFixed(1) + "s";
+          statusElement.innerText = "● 計測中...";
+        } else {
+          statusElement.innerText = "準備完了";
+        }
 
         const foreheadColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.forehead);
         const rCheekColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.rightCheek);
@@ -75,7 +86,6 @@
         if (isRecording) {
           recordedData.push({
             time: Date.now(),
-            // 座標のみ保存（visibilityは除外）
             landmarks: landmarks.slice(0, 106).map(l => ({x: l.x, y: l.y, z: l.z})), 
             rppg: { forehead: foreheadColor, right: rCheekColor, left: lCheekColor }
           });
@@ -114,7 +124,15 @@
     }
 
     const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
-    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5 });
+    
+    // --- オプション設定の変更 ---
+    faceMesh.setOptions({ 
+      maxNumFaces: 1, 
+      refineLandmarks: true, 
+      minDetectionConfidence: 0.5,
+      minFacePresenceConfidence: 0.5 // ←ここに追加！
+    });
+    
     faceMesh.onResults(onResults);
 
     const camera = new Camera(videoElement, {
@@ -126,16 +144,20 @@
     startBtn.onclick = () => {
       if(passInput.value !== SECRET_PASS) { alert("合言葉が違います"); return; }
       if(!userIDInput.value) { alert("被験者IDを入力してください"); return; }
+      
       isRecording = true;
+      startTime = Date.now(); // 開始時刻を記録
       recordedData = [];
+      
       startBtn.style.display = "none";
       stopBtn.style.display = "inline-block";
+      timerElement.style.display = "block"; // タイマーを表示
     };
 
     stopBtn.onclick = async () => {
       isRecording = false;
+      timerElement.style.display = "none"; // 送信時はタイマーを隠す
       
-      // 1. ボタンを無効化し、状態を表示
       statusElement.innerText = "⏳ データをまとめています...";
       stopBtn.disabled = true;
       stopBtn.style.opacity = "0.5";
@@ -148,28 +170,22 @@
       statusElement.innerText = "🚀 送信中... ブラウザを閉じないでください";
 
       try {
-        // GASへの送信（mode: 'no-cors' の場合、レスポンスの中身は見られませんが、
-        // ネットワークエラーがなければ catch に飛ばないことで成功を判定します）
         await fetch(GAS_URL, {
           method: "POST",
           mode: "no-cors",
           body: JSON.stringify(payload)
         });
 
-        // 2. 成功時の表示
         statusElement.innerText = "✅ 送信成功！";
         statusElement.style.color = "#28a745";
-        alert("データの送信が正常に完了しました！ご協力ありがとうございます。");
-        
-        // 次の計測のためにリセット
+        alert("データの送信が正常に完了しました！");
         location.reload(); 
 
       } catch (e) {
-        // 3. 失敗時の表示
         console.error(e);
-        statusElement.innerText = "❌ 送信失敗。ネット接続を確認してください。";
+        statusElement.innerText = "❌ 送信失敗。";
         statusElement.style.color = "#dc3545";
-        alert("エラーが発生しました。もう一度「送信」を押すか、担当者に連絡してください。");
+        alert("エラーが発生しました。");
         stopBtn.disabled = false;
         stopBtn.style.opacity = "1";
       }
