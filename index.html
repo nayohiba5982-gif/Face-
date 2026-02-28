@@ -9,26 +9,34 @@
     body { font-family: sans-serif; text-align: center; background: #f0f2f5; }
     #container { position: relative; width: 640px; height: 480px; margin: 10px auto; border: 5px solid #fff; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); overflow: hidden; }
     video, canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
-    .controls { margin: 20px; padding: 20px; background: white; display: inline-block; border-radius: 10px; }
-    button { padding: 10px 25px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; transition: 0.3s; }
+    .controls { margin: 20px; padding: 20px; background: white; display: inline-block; border-radius: 10px; min-width: 300px; }
+    button { padding: 12px 30px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; transition: 0.3s; font-weight: bold; }
     #startBtn { background: #28a745; color: white; }
     #stopBtn { background: #dc3545; color: white; display: none; }
-    input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 120px; margin: 5px; }
-    #status { margin-top: 10px; font-weight: bold; color: #555; }
-    /* 経過時間表示用のスタイル */
-    #timer { font-size: 24px; color: #dc3545; margin-bottom: 10px; font-weight: bold; display: none; }
+    input { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; width: 140px; margin: 5px; }
+    #status { margin-top: 15px; font-weight: bold; color: #555; }
+    
+    /* タイマーとスコアのスタイル */
+    #display-panel { display: none; margin-bottom: 15px; }
+    #timer { font-size: 48px; color: #dc3545; font-weight: bold; font-family: monospace; }
+    #score { font-size: 20px; color: #007bff; margin-top: 5px; font-weight: bold; }
   </style>
 </head>
 <body>
-  <h1>Data Collector</h1>
+  <h1>rPPG Data Collector</h1>
 
   <div class="controls">
-    <div id="timer">00.0s</div> <input type="password" id="passCode" placeholder="Password">
+    <div id="display-panel">
+      <div id="timer">00.0s</div>
+      <div id="score">推定心拍数: -- BPM</div>
+    </div>
+
+    <input type="password" id="passCode" placeholder="Password">
     <input type="text" id="userID" placeholder="User_ID">
     <br>
-    <button id="startBtn">計測開始</button>
-    <button id="stopBtn">計測終了 & 送信</button>
-    <div id="status">準備中...</div>
+    <button id="startBtn">計測開始 (30秒)</button>
+    <button id="stopBtn">送信中...</button>
+    <div id="status">カメラを起動中...</div>
   </div>
 
   <div id="container">
@@ -42,9 +50,11 @@
 
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d', {willReadFrequently: true});
+    const canvasCtx = canvasElement.getContext('2d');
     const statusElement = document.getElementById('status');
-    const timerElement = document.getElementById('timer'); // タイマー要素
+    const timerElement = document.getElementById('timer');
+    const scoreElement = document.getElementById('score');
+    const displayPanel = document.getElementById('display-panel');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const userIDInput = document.getElementById('userID');
@@ -52,7 +62,8 @@
 
     let isRecording = false;
     let recordedData = [];
-    let startTime = 0; // 開始時間保持用
+    let startTime = 0;
+    let timerId = null;
 
     const ROI_LANDMARKS = {
       forehead: [10, 151, 9],
@@ -67,15 +78,7 @@
 
       if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
         const landmarks = results.multiFaceLandmarks[0];
-        
-        // 経過時間の計算と表示
-        if (isRecording) {
-          const elapsed = (Date.now() - startTime) / 1000;
-          timerElement.innerText = elapsed.toFixed(1) + "s";
-          statusElement.innerText = "● 計測中...";
-        } else {
-          statusElement.innerText = "準備完了";
-        }
+        if (!isRecording) statusElement.innerText = "準備完了：正面を向いてください";
 
         const foreheadColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.forehead);
         const rCheekColor = getAverageColorOfPoints(landmarks, ROI_LANDMARKS.rightCheek);
@@ -86,53 +89,56 @@
         if (isRecording) {
           recordedData.push({
             time: Date.now(),
-            landmarks: landmarks.slice(0, 106).map(l => ({x: l.x, y: l.y, z: l.z})), 
+            landmarks: landmarks.slice(0, 5).map(l => ({x: l.x, y: l.y})), // 軽量化のため座標数を削減
             rppg: { forehead: foreheadColor, right: rCheekColor, left: lCheekColor }
           });
+          updateLiveBPM();
         }
       } else {
-        statusElement.innerText = "顔を認識できません";
+        statusElement.innerText = "顔が認識されていません";
       }
       canvasCtx.restore();
     }
 
+    // 簡易的なリアルタイムBPM表示 (最新3秒のデータから算出)
+    function updateLiveBPM() {
+      if (recordedData.length < 60) return;
+      const recent = recordedData.slice(-90);
+      const gs = recent.map(d => (d.rppg.forehead.g + d.rppg.right.g + d.rppg.left.g)/3);
+      const mean = gs.reduce((a,b) => a+b) / gs.length;
+      let peaks = 0;
+      for(let i=1; i<gs.length-1; i++) {
+        if(gs[i] > mean && gs[i] > gs[i-1] && gs[i] > gs[i+1]) peaks++;
+      }
+      const dur = (recent[recent.length-1].time - recent[0].time) / 1000;
+      const bpm = Math.round((peaks / dur) * 60);
+      if(bpm > 40 && bpm < 120) scoreElement.innerText = `推定心拍数: ${bpm} BPM`;
+    }
+
     function getAverageColorOfPoints(landmarks, indices) {
       let r = 0, g = 0, b = 0;
-      const sampleSize = 5;
       indices.forEach(idx => {
         const point = landmarks[idx];
         const x = Math.floor((1 - point.x) * canvasElement.width);
         const y = Math.floor(point.y * canvasElement.height);
-        const imageData = canvasCtx.getImageData(x - 2, y - 2, sampleSize, sampleSize).data;
-        let pr = 0, pg = 0, pb = 0;
-        for (let i = 0; i < imageData.length; i += 4) {
-          pr += imageData[i]; pg += imageData[i + 1]; pb += imageData[i + 2];
-        }
-        r += pr / (imageData.length / 4);
-        g += pg / (imageData.length / 4);
-        b += pb / (imageData.length / 4);
+        const imageData = canvasCtx.getImageData(x, y, 1, 1).data;
+        r += imageData[0]; g += imageData[1]; b += imageData[2];
       });
-      return { r: Math.round(r / indices.length), g: Math.round(g / indices.length), b: Math.round(b / indices.length) };
+      return { r: Math.round(r/indices.length), g: Math.round(g/indices.length), b: Math.round(b/indices.length) };
     }
 
     function drawGuide(landmarks) {
-      canvasCtx.fillStyle = "rgba(0, 255, 0, 0.5)";
+      canvasCtx.fillStyle = "#00ff00";
       [...ROI_LANDMARKS.forehead, ...ROI_LANDMARKS.rightCheek, ...ROI_LANDMARKS.leftCheek].forEach(idx => {
         const p = landmarks[idx];
-        canvasCtx.fillRect((1 - p.x) * canvasElement.width - 3, p.y * canvasElement.height - 3, 6, 6);
+        canvasCtx.beginPath();
+        canvasCtx.arc((1 - p.x) * canvasElement.width, p.y * canvasElement.height, 3, 0, 2*Math.PI);
+        canvasCtx.fill();
       });
     }
 
     const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
-    
-    // --- オプション設定の変更 ---
-    faceMesh.setOptions({ 
-      maxNumFaces: 1, 
-      refineLandmarks: true, 
-      minDetectionConfidence: 0.5,
-      minFacePresenceConfidence: 0.5 // ←ここに追加！
-    });
-    
+    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.5, minFacePresenceConfidence: 0.5 });
     faceMesh.onResults(onResults);
 
     const camera = new Camera(videoElement, {
@@ -142,54 +148,51 @@
     camera.start();
 
     startBtn.onclick = () => {
-      if(passInput.value !== SECRET_PASS) { alert("合言葉が違います"); return; }
-      if(!userIDInput.value) { alert("被験者IDを入力してください"); return; }
+      if(passInput.value !== SECRET_PASS) { alert("パスワードが違います"); return; }
+      if(!userIDInput.value) { alert("IDを入力してください"); return; }
       
       isRecording = true;
-      startTime = Date.now(); // 開始時刻を記録
+      startTime = Date.now();
       recordedData = [];
       
       startBtn.style.display = "none";
-      stopBtn.style.display = "inline-block";
-      timerElement.style.display = "block"; // タイマーを表示
+      displayPanel.style.display = "block";
+      statusElement.innerText = "● 計測中... 動かないでください";
+
+      // 独立タイマー起動 (100ms周期)
+      timerId = setInterval(() => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        timerElement.innerText = elapsed.toFixed(1) + "s";
+        
+        // 30秒で自動終了
+        if (elapsed >= 30) {
+          stopAndSend();
+        }
+      }, 100);
     };
 
-    stopBtn.onclick = async () => {
+    async function stopAndSend() {
       isRecording = false;
-      timerElement.style.display = "none"; // 送信時はタイマーを隠す
+      clearInterval(timerId);
       
-      statusElement.innerText = "⏳ データをまとめています...";
+      startBtn.style.display = "none";
+      stopBtn.style.display = "inline-block";
       stopBtn.disabled = true;
-      stopBtn.style.opacity = "0.5";
-
-      const payload = {
-        userID: userIDInput.value,
-        points: recordedData
-      };
-
-      statusElement.innerText = "🚀 送信中... ブラウザを閉じないでください";
+      statusElement.innerText = "🚀 データを送信中... 数秒かかります";
 
       try {
         await fetch(GAS_URL, {
           method: "POST",
           mode: "no-cors",
-          body: JSON.stringify(payload)
+          body: JSON.stringify({ userID: userIDInput.value, points: recordedData })
         });
-
-        statusElement.innerText = "✅ 送信成功！";
-        statusElement.style.color = "#28a745";
-        alert("データの送信が正常に完了しました！");
+        alert("送信完了！お疲れ様でした。");
         location.reload(); 
-
       } catch (e) {
-        console.error(e);
-        statusElement.innerText = "❌ 送信失敗。";
-        statusElement.style.color = "#dc3545";
-        alert("エラーが発生しました。");
+        alert("送信失敗。ネット接続を確認してください。");
         stopBtn.disabled = false;
-        stopBtn.style.opacity = "1";
       }
-    };
+    }
   </script>
 </body>
 </html>
